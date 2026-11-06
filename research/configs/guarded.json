@@ -1,0 +1,8 @@
+{
+  "mode": "guarded",
+  "update": false,
+  "recreate": true,
+  "native_fullscreen": true,
+  "finish": false,
+  "detach": true
+}

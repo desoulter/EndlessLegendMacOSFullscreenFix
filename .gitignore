@@ -1,0 +1,16 @@
+.build/
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+*.dylib
+*.exe
+*.dll
+*.app/
+*.assets
+*.resS
+*.bundle
+*.zip
+*.tar.gz
+*.tgz
+ContextFix/

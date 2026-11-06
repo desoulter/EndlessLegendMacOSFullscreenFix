@@ -13,6 +13,8 @@ First public release.
 - Complete Objective-C source and Python build/install/status/uninstall workflow.
 - Original-file and permissions backup, compatibility checks, rollback on ordinary
   write failures, and refusal to overwrite externally changed files or backups.
+- Preserves and validates the native helper's `LC_UUID` command, required for
+  loading it under macOS/Rosetta; detects affected earlier builds without UUID.
 - Self-contained synthetic tests and optional tests against temporary copies of
   real game files.
 - English and Russian instructions, technical explanation, and OpenGL reproductions.

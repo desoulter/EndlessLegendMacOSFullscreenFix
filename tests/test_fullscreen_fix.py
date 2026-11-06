@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import plistlib
 import struct
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -137,6 +138,40 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             fix.install(self.root)
         self.assertEqual(self.snapshot(), before)
+
+    def test_helper_without_uuid_is_rejected_before_backups(self):
+        native, metadata = self.build.return_value
+        native = fixtures.native(with_uuid=False)
+        self.build.return_value = native, dict(metadata, binary_sha256=fix.sha(native))
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, "LC_UUID"):
+            fix.install(self.root)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_registered_helper_without_uuid_is_reported_but_can_be_removed(self):
+        fix.install(self.root)
+        native = fixtures.native(with_uuid=False)
+        (self.root / fix.NATIVE).write_bytes(native)
+        self.change_state(lambda state: next(item for item in state["files"]
+                          if item["path"] == fix.NATIVE).update(installed_sha256=fix.sha(native)))
+        before = self.snapshot()
+        for operation in (fix.status, fix.install):
+            with self.assertRaisesRegex(ValueError, "LC_UUID"):
+                operation(self.root)
+            self.assertEqual(self.snapshot(), before)
+        fix.uninstall(self.root)
+        self.assert_originals()
+
+    def test_invalid_uuid_load_commands_are_rejected(self):
+        valid = fixtures.native()
+        fix.validate_native(valid)
+        cases = [valid[:40], valid[:40] + bytes(16)]
+        malformed = bytearray(valid)
+        struct.pack_into("<I", malformed, 36, 16)
+        cases.append(bytes(malformed))
+        for data in cases:
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                fix.validate_native(data)
 
     def test_conflicting_backup_is_rejected_before_build(self):
         fix.atomic_write(self.root / fix.backup_name(fix.INFO), b"different original")
@@ -297,6 +332,18 @@ class RealGameTests(unittest.TestCase):
         permitted = {start + 0xa6, *range(start + 0xb0, start + 0xb4)}
         self.assertLessEqual({i for i in range(len(old)) if old[i] != new[i]}, permitted)
         self.assertEqual(new[start + 0x80], old[start + 0x80])
+
+    def test_real_native_helper_loads_in_x86_64_process(self):
+        loader = self.root / "load-native"
+        result = subprocess.run(
+            ["xcrun", "--sdk", "macosx", "clang", "-arch", "x86_64",
+             str(ROOT / "tests/load_native.c"), "-o", str(loader)],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        result = subprocess.run([str(loader), str(fix.BUILD / "libELContextFixNative.dylib")],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("x86_64 native helper loaded", result.stdout)
 
 
 if __name__ == "__main__":

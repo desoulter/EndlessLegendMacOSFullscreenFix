@@ -141,7 +141,10 @@ validating its layout and native addresses first.
 ## Installation integrity and scope
 
 The installer builds with an argument list passed to `xcrun`, validates that the
-result is an x86_64 Mach-O dynamic library, and records source/binary hashes.
+result is an x86_64 Mach-O dynamic library with a valid `LC_UUID` command, and
+records source/binary hashes. The linker UUID must be retained: omitting it with
+`-Wl,-no_uuid` causes macOS/Rosetta to reject the helper at launch with
+`missing LC_UUID load command`, before any patch code runs.
 There is no fixed prebuilt-helper checksum to edit after compilation.
 
 Original files and their permissions are recorded in `ContextFix/`. All backups

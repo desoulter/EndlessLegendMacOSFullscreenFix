@@ -162,6 +162,23 @@ def validate_native(data):
     cpu, _, filetype = struct.unpack_from("<3I", data, 4)
     require(cpu == 0x01000007 and filetype == 6,
             "The native helper must be an x86_64 dynamic library")
+    count, size = struct.unpack_from("<2I", data, 16)
+    end = 32 + size
+    require(end <= len(data), "Truncated native helper load commands")
+    cursor, uuids = 32, 0
+    for _ in range(count):
+        require(cursor + 8 <= end, "Truncated native helper load command")
+        command, length = struct.unpack_from("<2I", data, cursor)
+        require(length >= 8 and length % 8 == 0 and cursor + length <= end,
+                "Invalid native helper load command")
+        if command == 0x1b:  # LC_UUID: required when dyld loads this helper under Rosetta.
+            require(length == 24 and any(data[cursor + 8:cursor + 24]),
+                    "Invalid native helper LC_UUID")
+            uuids += 1
+        cursor += length
+    require(cursor == end, "Incorrect native helper load command size")
+    require(uuids == 1, "Native helper requires one LC_UUID load command for macOS/Rosetta. "
+            "Uninstall the existing fix and reinstall it from the corrected source")
 
 
 def build_native():
@@ -171,7 +188,7 @@ def build_native():
     BUILD.mkdir(parents=True, exist_ok=True)
     flags = ["-arch", "x86_64", "-fobjc-arc", "-dynamiclib", "-Wall", "-Wextra",
              "-Wno-unused-parameter", "-Wno-deprecated-declarations",
-             "-mmacosx-version-min=10.13", "-Wl,-no_uuid",
+             "-mmacosx-version-min=10.13",
              "-install_name", LIB_NAME.rstrip(b"\0").decode(),
              "-framework", "AppKit", "-framework", "OpenGL"]
     fd, name = tempfile.mkstemp(prefix=".native-", suffix=".dylib", dir=str(BUILD))
@@ -255,7 +272,10 @@ def status(root):
         return False
     state = load_state(root)
     print("Fullscreen Fix " + state["version"])
-    return verify_installed(root, state)
+    healthy = verify_installed(root, state)
+    if healthy:
+        validate_native((root / NATIVE).read_bytes())
+    return healthy
 
 
 def write_transaction(root, changes, modes):
@@ -285,6 +305,7 @@ def install(root, dry_run=False):
     if (root / STATE).exists():
         state = load_state(root)
         require(verify_installed(root, state), "Installed files or backups changed; refusing to overwrite")
+        validate_native((root / NATIVE).read_bytes())
         require(state.get("source_sha256") == sha(SOURCE.read_bytes()),
                 "Installed helper was built from different source. Uninstall it before installing this source")
         print("Fullscreen Fix " + VERSION + " is already installed.")

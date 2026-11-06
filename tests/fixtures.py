@@ -46,6 +46,8 @@ def info():
                                CFBundleIdentifier="example.synthetic.game", OtherSetting="keep-me"))
 
 
-def native():
-    # Header-only stand-in for filesystem tests; never executed or installed live.
-    return struct.pack("<8I", 0xfeedfacf, 0x01000007, 3, 6, 0, 0, 0, 0)
+def native(with_uuid=True):
+    # Minimal stand-in for filesystem tests; never executed or installed live.
+    commands = struct.pack("<2I16s", 0x1b, 24, bytes(range(16))) if with_uuid else b""
+    return struct.pack("<8I", 0xfeedfacf, 0x01000007, 3, 6,
+                       int(with_uuid), len(commands), 0, 0) + commands

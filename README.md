@@ -168,8 +168,23 @@ addresses are in [HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md).
 | `Unsupported PlayerSettings layout/content` | The settings object differs from the inspected build; do not bypass the check |
 | `Restore the original threaded-renderer setting first` | Restore the game's original renderer-threading setting before installation |
 | `Native build failed` / missing `xcrun` | Install Apple's Command Line Tools and rerun `build` |
+| Immediate launch failure with `missing LC_UUID load command` in the crash report | Reinstall using the corrected build instructions below |
 | `Existing original backup differs` | Keep the existing backups and resolve the earlier installation before proceeding |
 | `CHANGED/MISSING` | Inspect the named installed file or backup; the installer intentionally refuses to overwrite it |
+
+A helper built with the earlier `-Wl,-no_uuid` flag is rejected by macOS/Rosetta
+before Unity starts. From a checkout containing the build fix, quit the game and
+rebuild the installation:
+
+```sh
+python3 fullscreen_fix.py uninstall
+python3 fullscreen_fix.py install
+python3 fullscreen_fix.py status
+```
+
+For a custom Steam library, add the same `--game-dir` to all three commands.
+The corrected builder retains and validates `LC_UUID`; removal also works for
+the affected installation.
 
 Runtime context/resolution messages appear in `~/Library/Logs/Unity/Player.log`.
 The helper also appends lifecycle and MSAA messages to `/tmp/ELContextFix-native.log`.

@@ -8,8 +8,8 @@ From the repository directory:
 python3 -m unittest discover -s tests -v
 ```
 
-The default suite runs **22 tests** with small synthetic Mach-O, Unity asset and
-Info.plist fixtures. Two optional real-game tests are skipped unless their local
+The default suite runs **25 tests** with small synthetic Mach-O, Unity asset and
+Info.plist fixtures. Three optional real-game tests are skipped unless their local
 fixture path is supplied. No game bytes, native binaries, third-party Python
 packages or compiler are needed for the default suite.
 
@@ -18,6 +18,9 @@ untouched settings bytes and other objects, permissions and original-file
 restoration, idempotence, no-write dry runs, unsupported game layouts, compilation
 failure, backup collisions, changed installed files/backups, rejected manifest
 path redirection, and rollback of failed installation/removal writes.
+It also rejects a helper without a valid `LC_UUID` before changing the game,
+detects an already installed helper affected by this build error, and verifies
+that the affected installation can still be removed.
 
 There is deliberately no version-migration path. A manifest from another version
 is rejected before any installed file is changed.
@@ -30,12 +33,15 @@ On macOS with Apple's developer tools:
 python3 fullscreen_fix.py build
 file .build/libELContextFixNative.dylib
 otool -L .build/libELContextFixNative.dylib
+dwarfdump --uuid .build/libELContextFixNative.dylib
 ```
 
 Expect a thin **x86_64** dynamic library linked to macOS frameworks. Build flags
 include ARC, the x86_64 target, macOS 10.13 deployment target and a fixed install
-name. The random linker UUID is omitted. Compiler/SDK differences may still
-produce different binaries; source and binary hashes are recorded in
+name. Keep the linker's `LC_UUID` command: macOS/Rosetta rejects this helper
+without it before the game's entry point runs. The builder and installer check
+for a valid UUID. Compiler/SDK differences may still produce different binaries;
+source and binary hashes are recorded in
 `.build/build.json` for the local build.
 
 ## Optional tests against your game files
@@ -52,8 +58,10 @@ These tests read the original executable, settings and Info.plist from that
 installation, preferring the known original backup files in `ContextFix/backup/`
 when present. They compile the real native source and exercise installation,
 status and exact removal on **temporary copies**. They also compare every byte
-outside the targeted PlayerSettings fields. They do not install into the real
-game directory or launch the game.
+outside the targeted PlayerSettings fields and compile an x86_64 loader that
+loads the actual helper with `dlopen` (through Rosetta on Apple Silicon). This
+checks dynamic loading without installing Unity hooks in the test process. The
+tests do not install into the real game directory or launch the game.
 
 An unsupported original executable/layout fails this optional test rather than
 relaxing the release's compatibility checks. This fixture reader is a test-only

@@ -8,10 +8,37 @@ From the repository directory:
 python3 -m unittest discover -s tests -v
 ```
 
-The default suite runs **25 tests** with small synthetic Mach-O, Unity asset and
-Info.plist fixtures. Three optional real-game tests are skipped unless their local
-fixture path is supplied. No game bytes, native binaries, third-party Python
-packages or compiler are needed for the default suite.
+The default suite covers installation with synthetic Mach-O, Unity asset and
+Info.plist fixtures, plus benchmark parsing, recording and report generation.
+Four optional real-game tests are skipped unless their local fixture path is
+supplied. The Python checks need no game bytes, prebuilt native binaries or
+third-party Python packages. Native policy and interposition tests compile
+temporary binaries when a C compiler/macOS developer tools are available and
+are skipped otherwise.
+
+Rendering-observer tests additionally cover its independent load-command overlay,
+byte-exact removal over original/patched players, rejection of changed files,
+failed-activation rollback, preserving the release manifest, and incremental
+reading of complete FPS records without reusing stale or another PID's data.
+One of the optional real-game tests exercises the observer overlay on a temporary
+copy of the supported player. `python3 tools/render_probe.py build` compiles the
+observer; `tests/load_native.c` can smoke-test its loading through Rosetta without
+launching Unity. Actual frame pacing and MSAA experiments still require a game run.
+The native interposition regression test builds the actual observer against a fake
+GL backend and executes its allocation hook under x86_64, alone and with another
+dyld interposer. It verifies the safety clamp, explicit caps and caller scope
+without a graphics session, including the default 8-to-4 route that originally
+caused black output when the release interposer was bypassed.
+The same native harness exercises the F8 event hook with test application/event
+objects: F8 is consumed once and ordinary key events reach the original handler.
+Measurement tests verify marker timestamp alignment, exclusion of loading/warmup,
+different loading times, incomplete windows and rejection of mixed marked/unmarked
+runs. The F8 tutorial protocol has been tested in original and patched fullscreen
+on the configuration listed in the README. Audible cues and gameplay interaction
+require manual verification on other configurations.
+The native harness also simulates a 120 Hz swap wait and checks that the explicit
+60 FPS cap stays near 60 rather than adding another wait before swap and falling
+to roughly 40. It exercises the actual present interposer without a GPU session.
 
 Coverage includes exact patch scope, untouched machine instructions/i386 slice,
 untouched settings bytes and other objects, permissions and original-file
@@ -22,8 +49,15 @@ It also rejects a helper without a valid `LC_UUID` before changing the game,
 detects an already installed helper affected by this build error, and verifies
 that the affected installation can still be removed.
 
-There is deliberately no version-migration path. A manifest from another version
-is rejected before any installed file is changed.
+The `update` command replaces only the helper of an intact supported installation
+and updates its recorded hash and release version. Tests cover the compatible
+1.0.0-to-1.1.0 update, preservation of original backups and existing frame-cap
+preferences, and status/removal of intact 1.0.0 installs without updating.
+Unrelated versions are rejected before any installed file changes. Optional
+frame settings and helper updates are transactional, including rollback to the
+old version and preferences on a manifest write failure. The native harness
+checks runtime-options loading from an .app,
+the production cap alone, and observer inheritance of that cap.
 
 ## Compile the actual native helper
 
@@ -65,7 +99,7 @@ tests do not install into the real game directory or launch the game.
 
 An unsupported original executable/layout fails this optional test rather than
 relaxing the release's compatibility checks. This fixture reader is a test-only
-facility, not an update/migration feature in the installer.
+facility; supported release updates still verify installed files and backups.
 
 ## Manual game check
 
@@ -77,10 +111,12 @@ After installation, start the game through Steam and check:
 4. Cmd-Tab to another application, then return to the game.
 5. Check mouse alignment, menu selection, and an actual saved/new game.
 6. Check other installed patches, such as movie sound and visual indicators.
+7. After `update --fps-cap 60`, check an ordinary Steam launch without the observer.
+   Change the cap with `configure --fps-cap 100`, restart, and check again.
 
-The owner confirmed the central Retina/large-UI/2048×1330/Cmd-Tab scenario on the
-configuration in the README. Do not interpret that confirmation as testing all
-quality levels, gameplay durations or display arrangements.
+Retina, the large interface at 2048×1330, Cmd-Tab and ordinary Steam launches with
+the optional cap have been tested on the configuration in the README. Validation
+does not cover every quality level, gameplay duration or display arrangement.
 
 ## Independent drawable/context reproduction
 

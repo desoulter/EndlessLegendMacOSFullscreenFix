@@ -109,6 +109,41 @@ your resolution, and enable the large-interface option under **Interface** if
 desired. Fullscreen MSAA is capped to the driver's `GL_MAX_SAMPLES_EXT` limit
 (4× in the tested configuration). Other quality settings are preserved.
 
+## Optional frame cap and helper update
+
+To update an intact 1.0.0 or 1.1.0 installation, quit the game, use the new release's
+source directory, and enable the optional cap:
+
+```sh
+python3 fullscreen_fix.py update --fps-cap 60
+```
+
+This rebuilds and replaces only the native helper and its installation manifest, and
+saves the frame cap in `ContextFix/runtime-options.json`. Start through Steam
+normally; no benchmark logger or diagnostic observer is needed. Resolution,
+Retina, MSAA and other graphics-quality settings are preserved. The cap is an
+upper bound, not a guarantee that the game can sustain exactly that frame rate.
+
+For a fresh installation use `install --fps-cap 60`. Without an explicit setting,
+the extra cap is disabled. After updating the helper, change or disable it with:
+
+```sh
+python3 fullscreen_fix.py configure --fps-cap 100
+python3 fullscreen_fix.py configure --fps-cap 0
+```
+
+Restart the game after changing the cap. Runtime preferences are retained on
+uninstall but have no effect without the helper. The update command accepts only
+an intact supported installation and preserves original backups. Use `update`
+without `--fps-cap` to keep the existing cap; on a 1.0.0 installation without
+preferences it remains disabled. Unrelated experimental patches are rejected.
+
+In two marked 180-second tutorial runs at 2048×1330 and 4× MSAA, a cap of 60
+produced about 54/53 completed presents per second and GPU power of 3.48/3.43 W
+for original/patched fullscreen, respectively. The camera positions were
+approximately matched; these measurements do not prove identical per-frame
+cost in every scene. See [the investigation](docs/POWER-INVESTIGATION.ru.md).
+
 ## Status and removal
 
 Quit the game before removal:
@@ -190,6 +225,10 @@ Runtime context/resolution messages appear in `~/Library/Logs/Unity/Player.log`.
 The helper also appends lifecycle and MSAA messages to `/tmp/ELContextFix-native.log`.
 
 ## Tests and license
+
+For manual GPU/temperature A/B measurements, see the separate read-only
+[benchmark logger](docs/BENCHMARK.ru.md). It records CSV/JSON and generates a
+local comparison report without changing the game or its graphics settings.
 
 ```sh
 python3 -m unittest discover -s tests -v

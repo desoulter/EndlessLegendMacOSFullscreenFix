@@ -138,6 +138,21 @@ the table. These checks supplement, rather than replace, the installer's exact
 executable hash check. Supporting a different build requires inspecting and
 validating its layout and native addresses first.
 
+## Optional frame cap
+
+Version 1.1.0 optionally interposes `CGLFlushDrawable`. It calls the real swap
+first, then uses a monotonic clock and a per-thread/context timestamp to wait
+only for the time remaining in the requested frame period. Time already spent
+waiting for VSync counts toward that period; a slow frame incurs no extra wait.
+Interrupted sleeps resume. The cap does not change GL state or render resolution.
+
+The helper reads `ContextFix/runtime-options.json` once at game startup. A cap
+of 0 disables the extra wait; integer values from 15 to 240 are supported.
+`configure --fps-cap N` writes the preference without recompilation. A restart
+applies it. The helper performs no per-frame file I/O and requires no observer
+or logger for ordinary Steam launches. The observer can inherit the production
+cap when its own swap interposer takes precedence.
+
 ## Installation integrity and scope
 
 The installer builds with an argument list passed to `xcrun`, validates that the
@@ -153,16 +168,27 @@ paths and their known backup locations. Install activates the executable load
 command last; uninstall restores the executable before removing the helper.
 Ordinary Python I/O failures roll back the attempted multi-file operation.
 
+`update` accepts intact 1.0.0 and 1.1.0 manifests with the same backup layout.
+After validating installed files and originals, it rebuilds the helper and
+transactionally replaces it and the manifest, recording the current version.
+Other game files and original backups are preserved. An explicit `--fps-cap`
+also updates runtime preferences in that transaction; otherwise preferences
+are preserved. Unknown release/experimental manifests are rejected. Status
+and uninstall also accept intact 1.0.0 installations.
+
 The patch does not rewrite managed assemblies, saves, shaders or movie files,
 and does not change the renderer's threading setting. Existing movie-audio and
 visual fixes remained intact in the tested installation.
 
 ## Evidence and limits
 
-The owner confirmed the working release behavior: Retina, the large interface,
-2048×1330, and Cmd-Tab away and back. Native 3024×1890 and 1920×1200 rendering
-were also checked. The repository's installation logic was tested against
+Runtime tests cover Retina, the large interface at 2048×1330, Cmd-Tab away and
+back, and rendering at 3024×1890 and 1920×1200. Installation logic is tested against
 synthetic fixtures and temporary copies of the actual supported game files.
+The optional frame cap has been tested with ordinary Steam launches.
+Controlled tutorial comparisons at 2048×1330 and 4× MSAA found similar GPU power
+in original/patched fullscreen with a cap of 60; see
+[the measurements and limits](POWER-INVESTIGATION.ru.md).
 
 The Cocoa reproduction identifies a drawable-lifetime workaround. The runtime
 diagnostics identify an unsupported MSAA request. Neither establishes behavior

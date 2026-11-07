@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.0 — 2026-11-07
+
+- Optional post-swap frame cap for ordinary Steam launches, disabled by default;
+  configured with `configure --fps-cap N` after updating the helper.
+- Transactional `update` of an intact supported helper, preserving the player,
+  graphics settings and original backups; `update --fps-cap 60` enables the cap.
+- Compatible update from 1.0.0 with original backups and existing frame-cap
+  preferences preserved; status and removal also accept intact 1.0.0 installs.
+- Rendering diagnostics, in-game F8 measurement markers and controlled tutorial
+  comparisons. The observer preserves the production MSAA clamp and frame cap.
+- Installer rollback/configuration tests and native interposition/pacing tests,
+  including the production limiter without the observer.
+
 ## 1.0.0 — 2026-11-06
 
 First public release.
@@ -19,7 +32,7 @@ First public release.
   real game files.
 - English and Russian instructions, technical explanation, and OpenGL reproductions.
 
-Confirmed on Apple M4 Pro, macOS 26.6.2, Unity 5.3.6p1, ELCP 2.7.9 S3:
+Tested on Apple M4 Pro, macOS 26.6.2, Unity 5.3.6p1, ELCP 2.7.9 S3:
 Retina, 2048×1330 with the large interface, and Cmd-Tab away and back.
 
 The repository distributes source only. There is no experimental-version

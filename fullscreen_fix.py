@@ -11,7 +11,9 @@ import subprocess
 import sys
 import tempfile
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
+# Both releases use the same file manifest and original-backup layout.
+COMPATIBLE_STATE_VERSIONS = ("1.0.0", VERSION)
 BASE_EXE_SHA = "588bf58e87809a226a4d1a822d4c4f7b0c509617c7d4e39fd4b828ff6df4f6c5"
 PLAYER_SHA = "98102951d913ce37b3be2c1cba0529cf31439cb2e274ecafb5685fe4ecb3d5ef"
 LIB_NAME = b"@executable_path/../Plugins/libELContextFixNative.dylib\0"
@@ -20,6 +22,7 @@ SETTINGS = "EndlessLegend.app/Contents/Resources/Data/globalgamemanagers"
 NATIVE = "EndlessLegend.app/Contents/Plugins/libELContextFixNative.dylib"
 INFO = "EndlessLegend.app/Contents/Info.plist"
 STATE = "ContextFix/install-state.json"
+OPTIONS = "ContextFix/runtime-options.json"
 PACKAGE = Path(__file__).resolve().parent
 SOURCE = PACKAGE / "src/ELContextFixNative.m"
 BUILD = PACKAGE / ".build"
@@ -226,7 +229,7 @@ def valid_digest(value):
 
 def load_state(root):
     state = json.loads((root / STATE).read_text())
-    require(isinstance(state, dict) and state.get("version") == VERSION,
+    require(isinstance(state, dict) and state.get("version") in COMPATIBLE_STATE_VERSIONS,
             "Unsupported installation state. Remove experimental or other versions "
             "with the installer that created them before installing this release")
     records = state.get("files")
@@ -275,7 +278,39 @@ def status(root):
     healthy = verify_installed(root, state)
     if healthy:
         validate_native((root / NATIVE).read_bytes())
+    print("Frame cap: " + str(read_frame_options(root)["fps_cap"]) + " (0 disables; applied on game startup)")
     return healthy
+
+
+def frame_options(fps_cap):
+    require(type(fps_cap) is int and (fps_cap == 0 or 15 <= fps_cap <= 240),
+            "FPS cap must be an integer: 0 disables, or 15–240")
+    return dict(schema=1, fps_cap=fps_cap)
+
+
+def read_frame_options(root):
+    path = root / OPTIONS
+    if not path.exists():
+        return frame_options(0)
+    value = json.loads(path.read_text())
+    require(isinstance(value, dict) and value.get("schema") == 1 and set(value) == {"schema", "fps_cap"},
+            "Unknown runtime options; refusing to replace them")
+    return frame_options(value.get("fps_cap"))
+
+
+def encoded_frame_options(root, fps_cap):
+    read_frame_options(root)  # Validate an existing preferences file first.
+    return (json.dumps(frame_options(fps_cap), indent=2) + "\n").encode()
+
+
+def configure(root, fps_cap):
+    options = encoded_frame_options(root, fps_cap)
+    state = load_state(root)
+    require(verify_installed(root, state), "Installed files or backups changed; refusing to configure")
+    require(state.get("source_sha256") == sha(SOURCE.read_bytes()),
+            "Update the installed helper from this source before configuring the frame cap")
+    write_transaction(root, {OPTIONS: options}, {})
+    print("Frame cap set to " + str(fps_cap) + ". Restart the game to apply; 0 disables the cap.")
 
 
 def write_transaction(root, changes, modes):
@@ -301,13 +336,16 @@ def write_transaction(root, changes, modes):
         raise
 
 
-def install(root, dry_run=False):
+def install(root, dry_run=False, fps_cap=None):
+    options = encoded_frame_options(root, fps_cap) if fps_cap is not None else None
     if (root / STATE).exists():
         state = load_state(root)
         require(verify_installed(root, state), "Installed files or backups changed; refusing to overwrite")
         validate_native((root / NATIVE).read_bytes())
         require(state.get("source_sha256") == sha(SOURCE.read_bytes()),
-                "Installed helper was built from different source. Uninstall it before installing this source")
+                "Installed helper was built from different source. Run update to rebuild the installed helper")
+        if options is not None and not dry_run:
+            configure(root, fps_cap)
         print("Fullscreen Fix " + VERSION + " is already installed.")
         return
     require(not (root / NATIVE).exists(), "Unregistered native helper exists; remove its previous installation first")
@@ -344,9 +382,36 @@ def install(root, dry_run=False):
     state = dict(version=VERSION, source_sha256=metadata["source_sha256"], files=records)
     # Load the dependency first; activate the executable's new load command last.
     transaction = {relative: changed[relative] for relative in (NATIVE, INFO, SETTINGS, EXE)}
+    if options is not None:
+        transaction[OPTIONS] = options
     transaction[STATE] = (json.dumps(state, indent=2) + "\n").encode()
     write_transaction(root, transaction, modes)
     print("Fullscreen Fix " + VERSION + " installed. Start the game through Steam as usual.")
+
+
+def update(root, fps_cap=None):
+    """Update only the helper of an intact, supported installation, atomically."""
+    read_frame_options(root)
+    options = encoded_frame_options(root, fps_cap) if fps_cap is not None else None
+    state = load_state(root)
+    require(verify_installed(root, state), "Installed files or backups changed; refusing to update")
+    original = (root / backup_name(EXE)).read_bytes()
+    require(patch_executable(original) == (root / EXE).read_bytes(), "Unsupported installed player")
+    native, metadata = build_native()
+    validate_native(native)
+    require(metadata.get("source_sha256") == sha(SOURCE.read_bytes()) and
+            metadata.get("binary_sha256") == sha(native), "Build metadata mismatch")
+    revised = json.loads(json.dumps(state))
+    revised["version"] = VERSION
+    revised["source_sha256"] = metadata["source_sha256"]
+    next(item for item in revised["files"] if item["path"] == NATIVE)["installed_sha256"] = sha(native)
+    changes = {NATIVE: native}
+    if options is not None:
+        changes[OPTIONS] = options
+    changes[STATE] = (json.dumps(revised, indent=2) + "\n").encode()
+    write_transaction(root, changes, {NATIVE: (root / NATIVE).stat().st_mode & 0o7777})
+    print("Fullscreen helper updated; original backups and other game files preserved.")
+    print("Frame cap: " + str(read_frame_options(root)["fps_cap"]) + ". Start the game through Steam.")
 
 
 def uninstall(root):
@@ -369,20 +434,28 @@ def uninstall(root):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", action="version", version=VERSION)
-    parser.add_argument("action", choices=("build", "install", "status", "uninstall"))
+    parser.add_argument("action", choices=("build", "install", "update", "configure", "status", "uninstall"))
     parser.add_argument("--game-dir", type=Path, help="Folder containing EndlessLegend.app")
     parser.add_argument("--dry-run", action="store_true", help="Validate installation without changing game files")
+    parser.add_argument("--fps-cap", type=int, help="Optional frame cap: 0 disables, or 15–240; applies after restart")
     args = parser.parse_args(argv)
     default = PACKAGE.parent if (PACKAGE.parent / "EndlessLegend.app").exists() else Path.home() / "Library/Application Support/Steam/steamapps/common/Endless Legend"
     root = (args.game_dir or default).expanduser().resolve()
     try:
         require(not args.dry_run or args.action == "install", "--dry-run is only supported for install")
+        require(args.fps_cap is None or args.action in ("install", "update", "configure"),
+                "--fps-cap is supported for install, update and configure")
         if args.action == "build":
             build_native()
         else:
             require((root / EXE).exists(), "EndlessLegend.app not found; provide --game-dir")
             if args.action == "install":
-                install(root, args.dry_run)
+                install(root, args.dry_run, args.fps_cap)
+            elif args.action == "update":
+                update(root, args.fps_cap)
+            elif args.action == "configure":
+                require(args.fps_cap is not None, "configure requires --fps-cap")
+                configure(root, args.fps_cap)
             elif args.action == "uninstall":
                 uninstall(root)
             else:

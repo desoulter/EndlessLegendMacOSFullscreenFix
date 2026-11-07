@@ -115,6 +115,103 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse((self.root / fix.NATIVE).exists())
         self.assertFalse((self.root / fix.STATE).exists())
 
+    def test_optional_frame_cap_changes_only_its_settings_and_survives_removal(self):
+        fix.install(self.root)
+        self.assertEqual(fix.read_frame_options(self.root)["fps_cap"], 0)
+        before = {p: (self.root / p).read_bytes() for p in (*fix.FILE_ORDER, fix.STATE)}
+        fix.configure(self.root, 60)
+        self.assertEqual(fix.read_frame_options(self.root)["fps_cap"], 60)
+        for p, data in before.items():
+            self.assertEqual((self.root / p).read_bytes(), data)
+        fix.configure(self.root, 0)
+        self.assertEqual(fix.read_frame_options(self.root)["fps_cap"], 0)
+        fix.uninstall(self.root)
+        self.assert_originals()
+        self.assertEqual(fix.read_frame_options(self.root)["fps_cap"], 0)
+
+    def test_frame_cap_rejects_invalid_values_and_foreign_settings_without_writes(self):
+        fix.install(self.root)
+        for value in (True, False, -1, 1, 14, 241, 60.5, "60", None):
+            before = self.snapshot()
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                fix.configure(self.root, value)
+            self.assertEqual(self.snapshot(), before)
+        (self.root / fix.OPTIONS).write_text('{"schema":2,"other":"keep"}')
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, "Unknown runtime options"):
+            fix.configure(self.root, 60)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_helper_update_preserves_player_settings_backups_and_existing_patches(self):
+        fix.install(self.root)
+        self.change_state(lambda state: state.update(version="1.0.0", source_sha256=fix.sha(b"older source")))
+        before = self.snapshot()
+        native = fixtures.native() + b"updated helper"
+        self.build.return_value = native, dict(source_sha256=fix.sha(fix.SOURCE.read_bytes()),
+                                              binary_sha256=fix.sha(native))
+        fix.update(self.root, fps_cap=60)
+        self.assertTrue(fix.status(self.root))
+        after = self.snapshot()
+        changed = {p for p in set(before) | set(after) if before.get(p) != after.get(p)}
+        self.assertEqual(changed, {Path(fix.NATIVE), Path(fix.STATE), Path(fix.OPTIONS)})
+        self.assertEqual(fix.load_state(self.root)["version"], fix.VERSION)
+        self.assertEqual(fix.read_frame_options(self.root)["fps_cap"], 60)
+        fix.uninstall(self.root)
+        self.assert_originals()
+
+    def test_100_update_preserves_existing_frame_options_and_backups(self):
+        fix.install(self.root, fps_cap=100)
+        self.change_state(lambda state: state.update(version="1.0.0", source_sha256=fix.sha(b"older source")))
+        before = self.snapshot()
+        native = fixtures.native() + b"updated helper"
+        self.build.return_value = native, dict(source_sha256=fix.sha(fix.SOURCE.read_bytes()),
+                                              binary_sha256=fix.sha(native))
+        fix.update(self.root)
+        after = self.snapshot()
+        changed = {p for p in set(before) | set(after) if before.get(p) != after.get(p)}
+        self.assertEqual(changed, {Path(fix.NATIVE), Path(fix.STATE)})
+        self.assertEqual(fix.load_state(self.root)["version"], fix.VERSION)
+        self.assertEqual(fix.read_frame_options(self.root)["fps_cap"], 100)
+        self.assertTrue(fix.status(self.root))
+        fix.uninstall(self.root)
+        self.assert_originals()
+
+    def test_100_installation_can_be_checked_and_removed_without_updating(self):
+        fix.install(self.root)
+        self.change_state(lambda state: state.update(version="1.0.0", source_sha256=fix.sha(b"older source")))
+        before = self.snapshot()
+        self.assertTrue(fix.status(self.root))
+        self.assertEqual(self.snapshot(), before)
+        fix.uninstall(self.root)
+        self.assert_originals()
+
+    def test_failed_helper_update_rolls_back_native_settings_and_manifest(self):
+        fix.install(self.root, fps_cap=100)
+        self.change_state(lambda state: state.update(version="1.0.0", source_sha256=fix.sha(b"older source")))
+        before = self.snapshot()
+        native = fixtures.native() + b"new helper"
+        self.build.return_value = native, dict(source_sha256=fix.sha(fix.SOURCE.read_bytes()),
+                                              binary_sha256=fix.sha(native))
+        real_write, failed = fix.atomic_write, False
+
+        def fail_once(path, data, mode=None):
+            nonlocal failed
+            if path == self.root / fix.STATE and not failed:
+                failed = True
+                raise OSError("simulated update failure")
+            real_write(path, data, mode)
+
+        with patch.object(fix, "atomic_write", side_effect=fail_once), self.assertRaisesRegex(OSError, "update failure"):
+            fix.update(self.root, fps_cap=60)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_install_with_frame_cap_dry_run_does_not_write_settings(self):
+        before = self.snapshot()
+        fix.install(self.root, dry_run=True, fps_cap=60)
+        self.assertEqual(self.snapshot(), before)
+        fix.install(self.root, fps_cap=60)
+        self.assertEqual(fix.read_frame_options(self.root)["fps_cap"], 60)
+
     def test_dry_run_does_not_build_or_modify_any_file(self):
         before = self.snapshot()
         fix.install(self.root, dry_run=True)
@@ -257,11 +354,12 @@ class InstallerTests(unittest.TestCase):
         fix.install(self.root)
         self.change_state(lambda state: state.update(version="0.2.0"))
         before = self.snapshot()
-        with self.assertRaisesRegex(ValueError, "Unsupported installation state"):
-            fix.install(self.root)
-        self.assertEqual(self.snapshot(), before)
+        for operation in (fix.install, fix.update, fix.uninstall, fix.status):
+            with self.subTest(operation=operation.__name__), self.assertRaisesRegex(ValueError, "Unsupported installation state"):
+                operation(self.root)
+            self.assertEqual(self.snapshot(), before)
 
-    def test_changed_source_requires_explicit_removal(self):
+    def test_changed_source_requires_explicit_update(self):
         fix.install(self.root)
         self.change_state(lambda state: state.update(source_sha256="0" * 64))
         before = self.snapshot()

@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Endless Legend — сравнение GPU</title>
+<style>
+:root{font:15px/1.5 system-ui,sans-serif;color:#162235;background:#f3f6fa}*{box-sizing:border-box}
+body{max-width:1250px;margin:auto;padding:30px 22px}h1{font-size:28px;letter-spacing:-.6px;margin:4px 0 8px}
+h2{font-size:17px;margin:0 0 12px}p{margin:8px 0;color:#526075}small{color:#657186}.box{background:white;border:1px solid #dce3ec;border-radius:12px;padding:18px;margin:16px 0}
+.controls,.legend{display:flex;align-items:center;gap:18px;flex-wrap:wrap}.controls input[type=number]{width:105px;padding:7px;border:1px solid #aab7c8;border-radius:6px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}.blue{background:#2166d1}.orange{background:#da7621}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:16px}.chart{margin:0;min-width:0}.chart svg{width:100%;display:block}.chart p{min-height:205px;display:flex;align-items:center;justify-content:center;text-align:center}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}th,td{padding:10px 9px;text-align:right;border-bottom:1px solid #e7ecf2;vertical-align:top}th:first-child,td:first-child{text-align:left}th{font-weight:600;color:#546176;font-size:13px}td:first-child{max-width:350px}
+.scroll{overflow-x:auto}.notice{background:#fff8e8;border:1px solid #ead8a7;border-radius:8px;padding:12px;color:#6b5017;white-space:pre-line}.meta td{text-align:left!important;max-width:450px;overflow-wrap:anywhere}.meta th{text-align:left}
+button{background:#2166d1;color:white;padding:9px 14px;border:0;border-radius:6px;cursor:pointer}svg text{font:11px system-ui;fill:#667286}.mono{font:12px ui-monospace,monospace;overflow-wrap:anywhere}
+@media(max-width:850px){.charts{grid-template-columns:1fr}body{padding:18px 12px}h1{font-size:23px}}
+</style>
+<h1>Endless Legend · нагрузка GPU</h1>
+<p id="time-description">Два ручных прогона. Время на графиках отсчитывается от обнаружения процесса игры.</p>
+<div class="legend"><span><i class="dot blue"></i>С патчем</span><span><i class="dot orange"></i>Оригинал</span></div>
+<div class="box controls">
+<label>От, с <input id="start" type="number" min="0" step="10"></label>
+<label>До, с <input id="end" type="number" min="1" step="10"></label>
+<label><input id="background" type="checkbox"> Включать игру в фоне</label>
+<button id="update">Пересчитать</button><span id="range"></span>
+</div>
+<div id="warnings" class="notice" hidden></div>
+<div class="box scroll"><h2>Показатели в выбранном интервале</h2><table>
+<thead><tr><th>Показатель</th><th>С патчем: среднее / максимум</th><th>Оригинал: среднее / максимум</th><th>Разница средних</th><th>Замеров</th></tr></thead><tbody id="summary"></tbody></table></div>
+<div class="charts" id="charts"></div>
+<div class="box scroll"><h2>Условия прогонов</h2><table class="meta"><thead><tr><th>Условие</th><th>С патчем</th><th>Оригинал</th></tr></thead><tbody id="metadata"></tbody></table></div>
+<div class="box"><h2>Как читать результат</h2>
+<p>Сравнивайте одинаковый участок туториала или неподвижную сцену. Загрузка, меню, движение камеры и разные действия дают разные нагрузки. Для повторной проверки полезен порядок «патч → оригинал → оригинал → патч» с остыванием между запусками.</p>
+<p>GPU, температуры, вентиляторы и мощность относятся ко всему Mac. Средняя и максимальная температура вычислены по доступным SMC-датчикам Tg*. Их состав записан в metadata.json; исходные значения каждого датчика — в samples.jsonl. Пустое значение означает отсутствие данных, а не нулевую температуру или мощность.</p>
+<p>Мощность — оценка powermetrics. Частота вызовов present доступна только при записи через render_probe.py: это число завершённых CGLFlushDrawable в секунду, а не счётчик физически показанных кадров. Обычные записи и старые прогоны FPS не содержат. CSV сохраняет также ожидание до запуска и остывание после выхода. «Сбор датчиков» измеряет время работы нативного сборщика, а не все расходы Python и powermetrics.</p></div>
+<script>
+const DATA=__BENCHMARK_DATA__;
+const timeOrigin=DATA.time_basis==='measurement'?'начала отмеченного измерения':'обнаружения игры';
+if(DATA.time_basis==='measurement')document.getElementById('time-description').textContent='Время отсчитывается от начала измерения после F8 и стабилизации. Загрузка и прохождение до контрольного места исключены.';
+const runs=DATA.runs,colors=['#2166d1','#da7621'];
+const metrics=[['gpu_util_pct','Загрузка GPU','%'],['gpu_temp_mean_c','Температура GPU: средняя по датчикам','°C'],['gpu_temp_max_c','Температура GPU: максимум по датчикам','°C'],['cpu_temp_max_c','Температура CPU: максимум по датчикам','°C'],['fan0_rpm','Вентилятор 0','rpm'],['fan1_rpm','Вентилятор 1','rpm'],['gpu_power_w','Мощность GPU','Вт'],['cpu_power_w','Мощность CPU','Вт'],['game_cpu_pct','CPU процесса игры (100% = одно ядро)','%'],['gpu_frequency_mhz','Частота активного GPU','МГц'],['display_refresh_hz','Частота дисплея, если доступна','Гц'],['collection_ms','Сбор датчиков','мс']];
+metrics.push(['present_fps','Частота завершённых present','кадр/с'],['present_flush_ms','Время CGLFlushDrawable','мс'],['probe_query_ms','Сбор параметров рендера раз в секунду','мс'],['surface_samples','MSAA поверхности вывода','samples'],['msaa_fbo_samples','MSAA игрового буфера','samples'],['render_width','Ширина рендера','px'],['render_height','Высота рендера','px'],['present_viewport_width','Ширина viewport перед present','px'],['present_viewport_height','Высота viewport перед present','px'],['quality_msaa','MSAA в QualitySettings','samples'],['quality_vsync','VSync в QualitySettings','count'],['swap_interval','OpenGL swap interval','count'],['target_fps_script','Целевой FPS из скриптов','кадр/с'],['target_fps_engine','Целевой FPS движка','кадр/с']);
+const valid=v=>typeof v==='number'&&Number.isFinite(v);
+const probeExperiment=run=>{const c=run.metadata.patch?.render_probe?.config;return c?{msaa_cap:c.msaa_cap??null,fps_cap:c.fps_cap??0}:null};
+const game=r=>r.game_pid&&valid(r.game_elapsed_s);
+const duration=run=>DATA.time_basis==='measurement'?run.metadata.measurement.duration_s:Math.max(0,...run.rows.filter(game).map(r=>r.game_elapsed_s));
+const overlap=Math.min(...runs.map(duration));
+document.getElementById('start').value=DATA.start;
+document.getElementById('end').value=DATA.end??Math.floor(overlap);
+const text=(tag,value)=>{const e=document.createElement(tag);e.textContent=value;return e};
+function series(run,start,end,background){return run.rows.filter(r=>game(r)&&r.game_elapsed_s>=start&&r.game_elapsed_s<=end&&(background||r.game_active!==false))}
+function stats(rows,key){let a=rows.map(r=>r[key]).filter(valid);return a.length?{mean:a.reduce((a,b)=>a+b,0)/a.length,max:Math.max(...a),n:a.length}:{mean:null,max:null,n:0}}
+function fmt(value,digits=1){return valid(value)?value.toFixed(digits):'—'}
+function chart(container,sets,key,title,unit,start,end){
+ const card=text('div','');card.className='box chart';card.append(text('h2',title+' · '+unit));container.append(card);
+ const values=sets.flatMap(rows=>rows.map(r=>r[key]).filter(valid));
+ if(!values.length){card.append(text('p',key.includes('power')?'Нет данных мощности. Для них нужен прогон с --power.':'Нет доступных замеров.'));return}
+ const W=560,H=245,L=55,R=14,T=14,B=40;
+ let min=Math.min(...values),max=Math.max(...values);if(key.includes('pct'))min=0;
+ const span=Math.max(max-min,1);min=Math.max(0,min-span*.12);max+=span*.12;
+ const x=t=>L+(t-start)/Math.max(1,end-start)*(W-L-R),y=v=>H-B-(v-min)/(max-min)*(H-T-B);
+ const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');svg.setAttribute('viewBox',`0 0 ${W} ${H}`);svg.setAttribute('role','img');svg.setAttribute('aria-label',title);card.append(svg);
+ function el(name,attrs,label){let e=document.createElementNS(ns,name);Object.entries(attrs).forEach(([k,v])=>e.setAttribute(k,String(v)));if(label!==undefined)e.textContent=label;svg.append(e)}
+ for(let i=0;i<=4;i++){let v=min+(max-min)*i/4,yy=y(v);el('line',{x1:L,x2:W-R,y1:yy,y2:yy,stroke:'#e4eaf2'});el('text',{x:L-8,y:yy+4,'text-anchor':'end'},v.toFixed(max>200?0:1))}
+ for(let i=0;i<=4;i++){let t=start+(end-start)*i/4;el('text',{x:x(t),y:H-15,'text-anchor':'middle'},Math.round(t)+' с')}
+ sets.forEach((rows,index)=>{let d='',previous=null;for(const row of rows){if(!valid(row[key])){previous=null;continue}let t=row.game_elapsed_s,move=!previous||t-previous>Math.max(3,runs[index].metadata.interval_s*2.5);d+=(move?'M':'L')+x(t).toFixed(2)+','+y(row[key]).toFixed(2);previous=t}el('path',{d,fill:'none',stroke:colors[index],'stroke-width':1.8,'stroke-linejoin':'round'})});
+}
+function metadata(){const target=document.getElementById('metadata');const pairs=[
+ ['Начало записи',run=>run.metadata.started_utc],['macOS / архитектура',run=>run.metadata.macos+' / '+run.metadata.architecture],['Состояние патча',run=>JSON.stringify(run.metadata.patch)],
+ ['Видео в начале',run=>JSON.stringify(run.metadata.video_settings_start)],['Видео в конце',run=>JSON.stringify(run.metadata.video_settings_end)],['Датчики температуры',run=>(run.metadata.capabilities?.temperature_keys??[]).join(', ')],
+ ['Первый замер GPU max, °C',run=>fmt(run.rows.find(r=>valid(r.gpu_temp_max_c))?.gpu_temp_max_c)],['Питание во время игры',run=>[...new Set(run.rows.filter(game).map(r=>r.power_source).filter(Boolean))].join(', ')],
+ ['Размер поверхности дисплея в игре',run=>[...new Set(run.rows.filter(game).filter(r=>r.display_pixel_width).map(r=>r.display_pixel_width+'×'+r.display_pixel_height))].join(', ')],
+ ['Диагностика рендера',run=>JSON.stringify(run.metadata.patch?.render_probe??null)],['Записи рендера',run=>run.metadata.render_probe_frames_seen??0],
+ ['Отмеченное измерение',run=>JSON.stringify(run.metadata.measurement??null)],
+ ['Примечание',run=>run.metadata.notes||'—'],['Состояние записи',run=>run.metadata.status],['Каталог',run=>run.folder]];
+ for(const [name,get] of pairs){const tr=document.createElement('tr');tr.append(text('td',name),...runs.map(run=>text('td',get(run)??'—')));target.append(tr)}}
+function render(){
+ let start=Number(document.getElementById('start').value),end=Number(document.getElementById('end').value);if(!Number.isFinite(start)||!Number.isFinite(end)||start<0||end<=start){alert('Укажите корректный интервал');return}
+ const sets=runs.map(run=>series(run,start,end,document.getElementById('background').checked));
+ document.getElementById('range').textContent=`${start}–${end} с после ${timeOrigin}`;
+ const warnings=[];
+ if(end>overlap)warnings.push('Выбранный конец выходит за общий диапазон двух прогонов. Число замеров может отличаться.');
+ runs.forEach((run,i)=>{if(run.metadata.status!=='complete')warnings.push((i?'Оригинал':'С патчем')+': запись завершилась с ошибкой.');if(!sets[i].length)warnings.push((i?'Оригинал':'С патчем')+': нет активной игры в выбранном интервале.');if(!sets[i].some(r=>valid(r.gpu_temp_max_c)))warnings.push((i?'Оригинал':'С патчем')+': температура недоступна.');});
+ if(JSON.stringify(runs[0].metadata.video_settings_start)!==JSON.stringify(runs[1].metadata.video_settings_start))warnings.push('Настройки видео в начале двух прогонов отличаются. Проверьте условия сравнения.');
+ if(JSON.stringify(runs[0].metadata.capabilities?.temperature_keys)!==JSON.stringify(runs[1].metadata.capabilities?.temperature_keys))warnings.push('Состав датчиков температуры отличается. Средние и максимумы требуют отдельной проверки.');
+ if(JSON.stringify(probeExperiment(runs[0]))!==JSON.stringify(probeExperiment(runs[1])))warnings.push('Параметры диагностики различаются. Проверьте наличие ограничителя FPS и экспериментального ограничения MSAA.');
+ const notice=document.getElementById('warnings');notice.hidden=!warnings.length;notice.textContent=warnings.join('\n');
+ const tbody=document.getElementById('summary');tbody.replaceChildren();
+ for(const [key,name,unit] of metrics){let values=sets.map(rows=>stats(rows,key));let tr=document.createElement('tr');let delta=values[0].mean!==null&&values[1].mean!==null?values[0].mean-values[1].mean:null;tr.append(text('td',name+' · '+unit),...values.map(v=>text('td',fmt(v.mean)+' / '+fmt(v.max))),text('td',valid(delta)?(delta>0?'+':'')+fmt(delta)+' '+unit:'—'),text('td',values.map(v=>v.n).join(' / ')));tbody.append(tr)}
+ const target=document.getElementById('charts');target.replaceChildren();
+ for(const key of ['gpu_util_pct','gpu_temp_max_c','fan0_rpm','fan1_rpm','gpu_power_w','game_cpu_pct','present_fps']){if(key==='present_fps'&&!sets.some(rows=>rows.some(r=>valid(r[key]))))continue;const m=metrics.find(v=>v[0]===key);chart(target,sets,...m,start,end)}
+}
+document.getElementById('update').onclick=render;document.getElementById('background').onchange=render;metadata();render();
+</script>
+</html>

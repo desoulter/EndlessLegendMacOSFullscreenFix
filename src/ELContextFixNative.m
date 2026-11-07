@@ -1,4 +1,4 @@
-// Endless Legend macOS Fullscreen Fix 1.0.0 — MIT License
+// Endless Legend macOS Fullscreen Fix 1.1.0 — MIT License
 // Exact Unity build offsets are documented in docs/HOW_IT_WORKS.md.
 #import <AppKit/AppKit.h>
 #import <OpenGL/OpenGL.h>
@@ -7,6 +7,8 @@
 #import <objc/runtime.h>
 #import <mach-o/dyld.h>
 #include <stdatomic.h>
+#include <errno.h>
+#include <time.h>
 
 static void (*originalSetContext)(id, SEL, CGLContextObj);
 static Ivar contextIvar;
@@ -22,12 +24,78 @@ static SetResolutionFunction originalResolution;
 static Resolution (*originalSystemResolution)(void *);
 static void **clonedTable;
 static _Thread_local struct { BOOL active, fullscreen; int width, height; } request;
+static int frameCap;
+
+__attribute__((visibility("default"))) int ELContextFixGetFrameCap(void) { return frameCap; }
+#ifdef EL_FRAME_CAP_TEST
+__attribute__((visibility("default"))) void ELContextFixTestFrameCap(int cap) { frameCap = cap; }
+#endif
+
+static double FrameClock(void)
+{
+    struct timespec value;
+    clock_gettime(CLOCK_MONOTONIC, &value);
+    return value.tv_sec + value.tv_nsec / 1e9;
+}
+
+static CGLError LimitedPresent(CGLContextObj context)
+{
+    CGLError result = CGLFlushDrawable(context);
+    if (frameCap <= 0) return result;
+    static _Thread_local CGLContextObj previousContext;
+    static _Thread_local double previousReturn;
+    double now = FrameClock();
+    if (previousContext != context) {
+        previousContext = context;
+        previousReturn = 0;
+    }
+    // The same post-swap policy verified by the rendering probe: time already
+    // spent in rendering/VSync counts towards the budget, and a slow frame
+    // does not incur an additional pause. No GL state changes or per-frame I/O.
+    double delay = previousReturn > 0 ? previousReturn + 1.0 / frameCap - now : 0;
+    if (delay > 0) {
+        struct timespec wait = {(time_t)delay, (long)((delay - floor(delay)) * 1e9)};
+        while (nanosleep(&wait, &wait) && errno == EINTR) {}
+        now = FrameClock();
+    }
+    previousReturn = now;
+    return result;
+}
+
+__attribute__((used)) static struct { const void *replacement; const void *replacee; }
+frameCapInterposition __attribute__((section("__DATA,__interpose"))) = {(void *)LimitedPresent, (void *)CGLFlushDrawable};
 
 static void Log(const char *message)
 {
     FILE *file = fopen("/tmp/ELContextFix-native.log", "a");
     if (file) { fprintf(file, "%s\n", message); fclose(file); }
 }
+
+static void ReadFrameOptions(void)
+{
+    NSString *root = NSBundle.mainBundle.bundlePath.stringByDeletingLastPathComponent;
+    NSString *path = [root stringByAppendingPathComponent:@"ContextFix/runtime-options.json"];
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (!data) return;
+    NSDictionary *options = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![options isKindOfClass:NSDictionary.class] || ![options[@"schema"] isEqual:@1]) return;
+    NSNumber *value = options[@"fps_cap"];
+    if (![value isKindOfClass:NSNumber.class] ||
+        CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) return;
+    int cap = value.intValue;
+    if (value.doubleValue != cap || !(cap == 0 || (cap >= 15 && cap <= 240))) return;
+    frameCap = cap;
+    char message[128];
+    snprintf(message, sizeof(message), "Frame pacing: configured cap=%d (0 disables)", frameCap);
+    Log(message);
+}
+#ifdef EL_FRAME_CAP_TEST
+__attribute__((visibility("default"))) void ELContextFixTestReadOptions(void)
+{
+    frameCap = 0;
+    ReadFrameOptions();
+}
+#endif
 
 static NSSize PixelSize(void)
 {
@@ -247,6 +315,7 @@ __attribute__((constructor)) static void Bootstrap(void)
     @autoreleasepool {
         Log("constructor started");
         int result = ELContextFixInstall();
+        if (result == 1) ReadFrameOptions();
         if (result != 1) Log("constructor: hook installation failed");
     }
 }
